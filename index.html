@@ -247,64 +247,23 @@
    MARCH · Sistema de Exámenes — lógica de la aplicación
    ============================================================ */
 
-const STORE_KEYS = { exams:'march_exams', attempts:'march_attempts', students:'march_students', teachers:'march_teachers' };
+const STORE_KEYS = { exams:'exams', attempts:'attempts', students:'students', teachers:'teachers' };
 let DB = { exams: [], attempts: [], students: [], teachers: [] };
 
 // ------------------------------------------------------------------
-// Configuración de GitHub — reemplaza estos tres valores por los tuyos.
+// Configuración de Supabase — reemplaza estos dos valores por los tuyos.
 // Se explican en las instrucciones de despliegue.
 // ------------------------------------------------------------------
-const GITHUB_OWNER  = "cesaralexismorrongo-coder";
-const GITHUB_REPO   = "March-examenes";
-const GITHUB_TOKEN  = "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";
-const GITHUB_BRANCH = "main";
-const DATA_PATH     = "data.json";
-const GITHUB_API = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${DATA_PATH}`;
+const SUPABASE_URL = "https://nnodwozjdhcngzmazdqe.supabase.co/rest/v1/";
+const SUPABASE_ANON_KEY = "sb_publishable_6EUJmTTJJh_qW2XFaBfKGw_SgwKjvDN";
+const SUPABASE_TABLE = "march_data";
+const SUPABASE_REST = `${SUPABASE_URL}/rest/v1/${SUPABASE_TABLE}`;
 
 let CONNECTED = false;
 function initStorageMode(){ /* no requiere inicialización previa */ }
 
-function b64EncodeUtf8(str){ return btoa(unescape(encodeURIComponent(str))); }
-function b64DecodeUtf8(b64){ return decodeURIComponent(escape(atob(b64.replace(/\n/g,'')))); }
-
-// Lee el archivo data.json del repositorio (contenido + su "sha" actual)
-async function githubGetFile(){
-  try{
-    const res = await fetch(`${GITHUB_API}?ref=${GITHUB_BRANCH}&t=${Date.now()}`, {
-      headers:{ 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Accept':'application/vnd.github+json' }
-    });
-    if(res.status===404){ CONNECTED = true; return { record:{}, sha:null }; }
-    if(!res.ok) throw new Error('HTTP '+res.status);
-    const data = await res.json();
-    const record = JSON.parse(b64DecodeUtf8(data.content));
-    CONNECTED = true;
-    return { record, sha:data.sha };
-  }catch(e){
-    console.error(e);
-    CONNECTED = false;
-    return null;
-  }
-}
-// Escribe data.json en el repositorio. Si otro dispositivo guardó al mismo
-// tiempo, GitHub responde 409 (conflicto de "sha") y lo reportamos.
-async function githubPutFile(record, sha){
-  try{
-    const body = { message:'Actualizar datos de MARCH', content:b64EncodeUtf8(JSON.stringify(record)), branch:GITHUB_BRANCH };
-    if(sha) body.sha = sha;
-    const res = await fetch(GITHUB_API, {
-      method:'PUT',
-      headers:{ 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Accept':'application/vnd.github+json', 'Content-Type':'application/json' },
-      body: JSON.stringify(body)
-    });
-    if(res.status===409) return { ok:false, conflict:true };
-    if(!res.ok) throw new Error('HTTP '+res.status);
-    CONNECTED = true;
-    return { ok:true };
-  }catch(e){
-    console.error(e);
-    CONNECTED = false;
-    return { ok:false, conflict:false };
-  }
+function supabaseHeaders(extra){
+  return Object.assign({ 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` }, extra||{});
 }
 
 let session = null; // {role:'alumno'|'profesor', name, matricula, grupo}
@@ -331,46 +290,60 @@ function foxmark(dark, size){
 
 /* ---------------- Persistence ---------------- */
 async function loadAll(){
-  const result = await githubGetFile();
-  if(result===null){ toast('No se pudo conectar con la base de datos. Revisa tu conexión.'); return; }
-  const record = result.record || {};
-  DB.exams = record[STORE_KEYS.exams] || [];
-  DB.attempts = record[STORE_KEYS.attempts] || [];
-  DB.students = record[STORE_KEYS.students] || [];
-  DB.teachers = record[STORE_KEYS.teachers] || [];
+  try{
+    const res = await fetch(`${SUPABASE_REST}?id=eq.1&select=*`, { headers: supabaseHeaders() });
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const rows = await res.json();
+    const row = rows[0] || {};
+    DB.exams = row.exams || [];
+    DB.attempts = row.attempts || [];
+    DB.students = row.students || [];
+    DB.teachers = row.teachers || [];
+    CONNECTED = true;
+  }catch(e){
+    console.error(e);
+    CONNECTED = false;
+    toast('No se pudo conectar con la base de datos. Revisa tu conexión.');
+  }
 }
-// Trae la colección más reciente del repositorio (para no pisar cambios de otro usuario)
+// Trae la colección más reciente de Supabase (para no pisar cambios de otro usuario)
 async function refreshCollection(dbKey, storeKey, fallback){
-  const result = await githubGetFile();
-  if(result===null) return DB[dbKey] || fallback;
-  const arr = (result.record && result.record[storeKey]) || fallback;
-  DB[dbKey] = arr;
-  return arr;
+  try{
+    const res = await fetch(`${SUPABASE_REST}?id=eq.1&select=${storeKey}`, { headers: supabaseHeaders() });
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const rows = await res.json();
+    const arr = (rows[0] && rows[0][storeKey]) || fallback;
+    DB[dbKey] = arr;
+    CONNECTED = true;
+    return arr;
+  }catch(e){
+    console.error(e);
+    CONNECTED = false;
+    return DB[dbKey] || fallback;
+  }
 }
 async function saveKey(key, value, label){
-  let result = await githubGetFile();
-  if(result===null){ toast('No se pudo guardar '+label+'. Revisa tu conexión a internet.'); return; }
-  let record = result.record || {};
-  record[key] = value;
-  let put = await githubPutFile(record, result.sha);
-  if(put.conflict){
-    // otro dispositivo guardó al mismo tiempo: reintenta una vez con los datos más recientes
-    result = await githubGetFile();
-    if(result){
-      record = result.record || {};
-      record[key] = value;
-      put = await githubPutFile(record, result.sha);
-    }
+  try{
+    const res = await fetch(`${SUPABASE_REST}?id=eq.1`, {
+      method: 'PATCH',
+      headers: supabaseHeaders({ 'Content-Type':'application/json', 'Prefer':'return=minimal' }),
+      body: JSON.stringify({ [key]: value })
+    });
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    CONNECTED = true;
+  }catch(e){
+    console.error(e);
+    CONNECTED = false;
+    toast('No se pudo guardar '+label+'. Revisa tu conexión a internet.');
   }
-  if(!put.ok) toast('No se pudo guardar '+label+'. Revisa tu conexión a internet.');
 }
 async function saveExams(){ await saveKey(STORE_KEYS.exams, DB.exams, 'los exámenes'); }
 async function saveAttempts(){ await saveKey(STORE_KEYS.attempts, DB.attempts, 'los intentos'); }
 async function saveStudents(){ await saveKey(STORE_KEYS.students, DB.students, 'los alumnos'); }
 async function saveTeachers(){ await saveKey(STORE_KEYS.teachers, DB.teachers, 'los profesores'); }
 
-// Relee la colección más reciente (si hay sincronización activa) antes de aplicar un cambio,
-// para que dos dispositivos escribiendo casi al mismo tiempo no se borren datos entre sí.
+// Relee la colección más reciente antes de aplicar un cambio, para que dos
+// dispositivos escribiendo casi al mismo tiempo no se borren datos entre sí.
 async function mutateCollection(dbKey, storeKey, label, mutatorFn){
   let arr = await refreshCollection(dbKey, storeKey, DB[dbKey]);
   arr = mutatorFn(arr || []) || arr;
