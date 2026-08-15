@@ -1034,7 +1034,10 @@ function renderGrupos(){
   return `<div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
       <h2 style="margin:0;">Grupo ${g}</h2>
-      <button class="btn btn-ghost" data-back-grupos>← Ver todos los grupos</button>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-danger btn-sm" data-clear-historial="${g}" ${attempts.length===0?'disabled':''}>🗑️ Borrar historial de calificaciones</button>
+        <button class="btn btn-ghost" data-back-grupos>← Ver todos los grupos</button>
+      </div>
     </div>
     <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:20px;">
       <div><div class="hint">Alumnos</div><div style="font-size:22px;font-weight:700;">${alumnos.length}</div></div>
@@ -1254,6 +1257,17 @@ function bindEvents(){
   document.querySelectorAll('[data-select-grupo]').forEach(el=>el.onclick=()=>{ viewState.grupoSeleccionado = el.dataset.selectGrupo; render(); });
   const backGrupos = document.querySelector('[data-back-grupos]');
   if(backGrupos) backGrupos.onclick = ()=>{ viewState.grupoSeleccionado = null; render(); };
+  const clearHistorial = document.querySelector('[data-clear-historial]');
+  if(clearHistorial) clearHistorial.onclick = async ()=>{
+    const g = clearHistorial.dataset.clearHistorial;
+    const n = DB.attempts.filter(a=>a.grupo===g).length;
+    if(!confirm(`¿Borrar el historial de calificaciones del grupo ${g}? Se eliminarán ${n} presentación(es). Los alumnos y exámenes NO se tocan. Esta acción no se puede deshacer.`)) return;
+    if(!confirm('Confirma una vez más: esto es permanente y no hay forma de recuperar los datos borrados. ¿Continuar?')) return;
+    clearHistorial.disabled = true; clearHistorial.textContent = 'Borrando…';
+    await mutateCollection('attempts', STORE_KEYS.attempts, 'los intentos', arr=> arr.filter(a=>a.grupo!==g));
+    toast('Historial de calificaciones del grupo '+g+' borrado.');
+    render();
+  };
   document.querySelectorAll('[data-approve-teacher]').forEach(el=>el.onclick=async ()=>{
     const id = el.dataset.approveTeacher;
     el.disabled = true;
