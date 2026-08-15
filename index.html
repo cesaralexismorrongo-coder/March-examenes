@@ -850,7 +850,14 @@ function renderCrearExamen(){
       <div class="field"><label>Unidad</label><input id="ex-unidad" type="text" placeholder="Ej. 1, 2, 3…"></div>
     </div>
     <div class="field-row">
-      <div class="field"><label>Grupo</label><input id="ex-grupo" type="text" placeholder="EV4"></div>
+      <div class="field"><label>Grupo</label>
+        <select id="ex-grupo">
+          <option value="">Selecciona…</option>
+          ${groupList().map(g=>`<option value="${g}">${g}</option>`).join('')}
+          <option value="__otro">Otro (grupo nuevo)…</option>
+        </select>
+      </div>
+      <div class="field" id="ex-grupo-otro-wrap" style="display:none"><label>Nombre del grupo nuevo</label><input id="ex-grupo-otro" type="text" placeholder="EV4"></div>
       <div class="field"><label>Duración (min)</label><input id="ex-duracion" type="number" value="30" min="1"></div>
       <div class="field"><label>Preguntas a aplicar (aleatorio)</label><input id="ex-numaleatorio" type="number" placeholder="Todas si se deja vacío" min="1"></div>
     </div>
@@ -890,6 +897,8 @@ function renderQuestionsList(){
     </div>`).join('');
 }
 function escapeAttr(s){ return (s||'').replace(/"/g,'&quot;'); }
+// Normaliza el nombre de un grupo para evitar duplicados por mayúsculas/espacios (EVN3, evn3, EVN 3 → EVN3)
+function normalizeGrupo(s){ return (s||'').trim().toUpperCase().replace(/\s+/g,''); }
 
 // Calcula el promedio de calificación (0-10) agrupado por unidad, a partir de una lista de intentos calificados
 function promedioPorUnidad(attempts){
@@ -1126,6 +1135,10 @@ function bindEvents(){
   if(grupoSel) grupoSel.onchange = ()=>{
     document.getElementById('grupo-otro-wrap').style.display = grupoSel.value==='__otro' ? 'block':'none';
   };
+  const exGrupoSel = document.getElementById('ex-grupo');
+  if(exGrupoSel) exGrupoSel.onchange = ()=>{
+    document.getElementById('ex-grupo-otro-wrap').style.display = exGrupoSel.value==='__otro' ? 'block':'none';
+  };
   const btnEntrarAlumno = document.getElementById('btn-entrar-alumno');
   if(btnEntrarAlumno) btnEntrarAlumno.onclick = async ()=>{
     const matricula = document.getElementById('in-matricula').value.trim();
@@ -1146,6 +1159,7 @@ function bindEvents(){
     const grado = document.getElementById('reg-grado').value.trim();
     let grupo = document.getElementById('reg-grupo').value;
     if(grupo==='__otro') grupo = document.getElementById('reg-grupo-otro').value.trim();
+    grupo = normalizeGrupo(grupo);
     const email = document.getElementById('reg-correo').value.trim();
     if(!name||!matricula||!grupo){ toast('Nombre, matrícula y grupo son obligatorios.'); return; }
     btnRegistrarAlumno.disabled = true; btnRegistrarAlumno.textContent = 'Creando…';
@@ -1242,7 +1256,7 @@ function bindEvents(){
   if(btnGuardarPerfil) btnGuardarPerfil.onclick = async ()=>{
     const nombre = document.getElementById('pf-nombre').value.trim();
     const grado = document.getElementById('pf-grado').value.trim();
-    const grupo = document.getElementById('pf-grupo').value.trim();
+    const grupo = normalizeGrupo(document.getElementById('pf-grupo').value);
     const correo = document.getElementById('pf-correo').value.trim();
     if(!nombre||!grupo){ toast('Nombre y grupo son obligatorios.'); return; }
     await mutateCollection('students', STORE_KEYS.students, 'los alumnos', arr=>{
@@ -1315,7 +1329,9 @@ function bindEvents(){
     const title = document.getElementById('ex-title').value.trim();
     const materia = document.getElementById('ex-materia').value.trim();
     const unidad = document.getElementById('ex-unidad').value.trim();
-    const grupo = document.getElementById('ex-grupo').value.trim();
+    let grupo = document.getElementById('ex-grupo').value;
+    if(grupo==='__otro') grupo = document.getElementById('ex-grupo-otro').value;
+    grupo = normalizeGrupo(grupo);
     const duracionMin = parseInt(document.getElementById('ex-duracion').value)||30;
     const numAleatorioRaw = document.getElementById('ex-numaleatorio').value;
     const numAleatorio = numAleatorioRaw ? parseInt(numAleatorioRaw) : null;
@@ -1374,7 +1390,7 @@ function bindEvents(){
     const name = document.getElementById('al-nombre').value.trim();
     const matricula = document.getElementById('al-matricula').value.trim();
     const grado = document.getElementById('al-grado').value.trim();
-    const grupo = document.getElementById('al-grupo').value.trim();
+    const grupo = normalizeGrupo(document.getElementById('al-grupo').value);
     const email = document.getElementById('al-correo').value.trim();
     if(!name||!matricula||!grupo){ toast('Nombre, matrícula y grupo son obligatorios.'); return; }
     await mutateCollection('students', STORE_KEYS.students, 'los alumnos', arr=>{ arr.push({id:uid(), name, matricula, grado, grupo, email}); return arr; });
