@@ -847,6 +847,7 @@ function renderCrearExamen(){
     <div class="field-row">
       <div class="field"><label>Título del examen</label><input id="ex-title" type="text" placeholder="Examen Parcial Unidad 2"></div>
       <div class="field"><label>Materia</label><input id="ex-materia" type="text" placeholder="Tópicos de Calidad"></div>
+      <div class="field"><label>Unidad</label><input id="ex-unidad" type="text" placeholder="Ej. 1, 2, 3…"></div>
     </div>
     <div class="field-row">
       <div class="field"><label>Grupo</label><input id="ex-grupo" type="text" placeholder="EV4"></div>
@@ -890,14 +891,44 @@ function renderQuestionsList(){
 }
 function escapeAttr(s){ return (s||'').replace(/"/g,'&quot;'); }
 
+// Calcula el promedio de calificación (0-10) agrupado por unidad, a partir de una lista de intentos calificados
+function promedioPorUnidad(attempts){
+  const buckets = {};
+  attempts.filter(a=>a.status==='calificado').forEach(a=>{
+    const exam = DB.exams.find(e=>e.id===a.examId);
+    const unidad = (exam && exam.unidad) ? exam.unidad : 'Sin unidad';
+    if(!buckets[unidad]) buckets[unidad] = { sum:0, count:0 };
+    buckets[unidad].sum += (a.totalScore/a.maxScore*10);
+    buckets[unidad].count += 1;
+  });
+  return Object.entries(buckets).map(([unidad, b])=>({ unidad, promedio: b.sum/b.count, n: b.count }))
+    .sort((a,b)=> a.promedio - b.promedio);
+}
+function renderPromedioPorUnidadHtml(rows, tituloVacio){
+  if(!rows.length) return `<p class="hint">${tituloVacio}</p>`;
+  const min = Math.min(...rows.map(r=>r.promedio));
+  return rows.map(r=>{
+    const esMasBaja = r.promedio===min;
+    return `<div style="margin-bottom:10px;">
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;">
+        <span>Unidad ${r.unidad} ${esMasBaja?'⚠️':''}</span>
+        <span>${r.promedio.toFixed(1)} · ${r.n} calificado${r.n===1?'':'s'}</span>
+      </div>
+      <div style="background:var(--border);border-radius:6px;height:10px;">
+        <div style="width:${Math.max(4,r.promedio*10)}%;background:${esMasBaja?'#d9534f':'var(--green-light)'};height:10px;border-radius:6px;"></div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
 function renderMisExamenes(){
   const mine = DB.exams.filter(e=> e.profesorClave ? e.profesorClave===session.clave : e.profesor===session.name);
   if(mine.length===0) return `<div class="empty"><b>Aún no has creado exámenes</b>Ve a «Crear examen» para publicar el primero.</div>`;
   return `<div class="card"><h2>Exámenes publicados</h2>
-  <table><thead><tr><th>Título</th><th>Materia</th><th>Grupo</th><th>Preguntas</th><th>Presentados</th><th></th></tr></thead>
+  <table><thead><tr><th>Título</th><th>Materia</th><th>Unidad</th><th>Grupo</th><th>Preguntas</th><th>Presentados</th><th></th></tr></thead>
   <tbody>${mine.map(e=>{
     const n = DB.attempts.filter(a=>a.examId===e.id).length;
-    return `<tr><td><b>${e.title}</b></td><td>${e.materia||'—'}</td><td>${e.grupo}</td><td>${e.questions.length}</td><td>${n}</td>
+    return `<tr><td><b>${e.title}</b></td><td>${e.materia||'—'}</td><td>${e.unidad||'—'}</td><td>${e.grupo}</td><td>${e.questions.length}</td><td>${n}</td>
       <td><button class="btn btn-danger btn-sm" data-del-exam="${e.id}">Eliminar</button></td></tr>`;
   }).join('')}</tbody></table></div>`;
 }
@@ -1012,7 +1043,10 @@ function renderGrupos(){
       <div><div class="hint">Promedio</div><div style="font-size:22px;font-weight:700;">${prom!==null ? prom.toFixed(1) : '—'}</div></div>
     </div>
 
-    <h3>Alumnos del grupo</h3>
+    <h3 style="margin-top:22px;">Promedio por unidad</h3>
+    ${renderPromedioPorUnidadHtml(promedioPorUnidad(attempts), 'Aún no hay calificaciones en este grupo para comparar por unidad.')}
+
+    <h3 style="margin-top:22px;">Alumnos del grupo</h3>
     ${alumnos.length ? `<table><thead><tr><th>Nombre</th><th>Matrícula</th><th>Grado</th><th>Correo</th></tr></thead><tbody>
       ${alumnos.map(s=>`<tr><td>${s.name}</td><td>${s.matricula}</td><td>${s.grado||'—'}</td><td>${s.email||'—'}</td></tr>`).join('')}
     </tbody></table>` : `<p class="hint">Aún no hay alumnos registrados en este grupo.</p>`}
@@ -1057,6 +1091,10 @@ function renderReportes(){
       <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;"><span>${t}</span><span>${n}</span></div>
       <div style="background:var(--border);border-radius:6px;height:10px;"><div style="width:${Math.min(100,n*100/Math.max(...Object.values(porExamen)))}%;background:var(--green-light);height:10px;border-radius:6px;"></div></div>
     </div>`).join('')}
+  </div>
+  <div class="card"><h2>Promedio por unidad (todos los grupos)</h2>
+  <p class="hint" style="margin-bottom:14px;">La unidad marcada con ⚠️ es la que tiene el promedio más bajo — puede indicar un tema que conviene reforzar.</p>
+  ${renderPromedioPorUnidadHtml(promedioPorUnidad(DB.attempts), 'Aún no hay calificaciones para comparar por unidad.')}
   </div>`;
 }
 
@@ -1248,6 +1286,7 @@ function bindEvents(){
   if(btnSaveExam) btnSaveExam.onclick = async ()=>{
     const title = document.getElementById('ex-title').value.trim();
     const materia = document.getElementById('ex-materia').value.trim();
+    const unidad = document.getElementById('ex-unidad').value.trim();
     const grupo = document.getElementById('ex-grupo').value.trim();
     const duracionMin = parseInt(document.getElementById('ex-duracion').value)||30;
     const numAleatorioRaw = document.getElementById('ex-numaleatorio').value;
@@ -1258,7 +1297,7 @@ function bindEvents(){
       if(!q.text.trim()){ toast('Hay una pregunta sin enunciado.'); return; }
       if(q.type==='mc' && q.options.some(o=>!o.text.trim())){ toast('Completa todas las opciones.'); return; }
     }
-    const newExam = { id:uid(), title, materia, grupo, profesor:session.name, profesorClave:session.clave, duracionMin, numAleatorio, questions:draftQuestions, createdAt:Date.now() };
+    const newExam = { id:uid(), title, materia, unidad, grupo, profesor:session.name, profesorClave:session.clave, duracionMin, numAleatorio, questions:draftQuestions, createdAt:Date.now() };
     await mutateCollection('exams', STORE_KEYS.exams, 'los exámenes', arr=>{ arr.push(newExam); return arr; });
     draftQuestions = [];
     toast('Examen publicado con éxito.');
