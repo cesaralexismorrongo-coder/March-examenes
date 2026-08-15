@@ -251,11 +251,17 @@ const STORE_KEYS = { exams:'exams', attempts:'attempts', students:'students', te
 let DB = { exams: [], attempts: [], students: [], teachers: [] };
 
 // ------------------------------------------------------------------
+// Código institucional para registrarse como profesor. Cámbialo por el
+// que tú quieras y compártelo solo con tu planta docente.
+// ------------------------------------------------------------------
+const TEACHER_ACCESS_CODE = "CAMBIA-ESTE-CODIGO";
+
+// ------------------------------------------------------------------
 // Configuración de Supabase — reemplaza estos dos valores por los tuyos.
 // Se explican en las instrucciones de despliegue.
 // ------------------------------------------------------------------
-const SUPABASE_URL = "https://nnodwozjdhcngzmazdqe.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_6EUJmTTJJh_qW2XFaBfKGw_SgwKjvDN";
+const SUPABASE_URL = "https://TU_PROYECTO.supabase.co";
+const SUPABASE_ANON_KEY = "TU_ANON_KEY";
 const SUPABASE_TABLE = "march_data";
 const SUPABASE_REST = `${SUPABASE_URL}/rest/v1/${SUPABASE_TABLE}`;
 
@@ -468,8 +474,9 @@ function renderLoginProfesor(){
         <div class="field"><label>Clave de profesor (identificador único)</label><input id="reg-prof-clave" type="text" placeholder="Ej. DMBS01"></div>
         <div class="field"><label>Materia principal (opcional)</label><input id="reg-prof-materia" type="text" placeholder="Ej. Tópicos de Calidad"></div>
         <div class="field"><label>Correo electrónico (opcional)</label><input id="reg-prof-correo" type="email" placeholder="tucorreo@ejemplo.com"></div>
+        <div class="field"><label>Código institucional</label><input id="reg-prof-codigo" type="text" placeholder="Pídelo a tu coordinación"></div>
         <button class="btn btn-primary" id="btn-registrar-profesor" style="width:100%">Crear cuenta</button>
-        <p class="hint">Tu clave te identifica: úsala para volver a entrar y ver tus exámenes.</p>
+        <p class="hint">Tu cuenta quedará pendiente de aprobación por otro profesor ya registrado, salvo que seas el primero en registrarte.</p>
       `}
     </div>
   </div>`;
@@ -775,6 +782,7 @@ function renderResultado(){
 /* ---------------- Profesor Shell ---------------- */
 function renderProfesorShell(){
   const tab = viewState.teacherTab;
+  const pendientes = DB.teachers.filter(t=>t.aprobado===false);
   const tabs = [
     ['crear','📄 Crear examen'],
     ['examenes','📚 Mis exámenes'],
@@ -782,6 +790,7 @@ function renderProfesorShell(){
     ['grupos','🏫 Grupos'],
     ['alumnos','👥 Alumnos'],
     ['reportes','📈 Reportes'],
+    ['solicitudes', pendientes.length ? `🔔 Solicitudes (${pendientes.length})` : '🔔 Solicitudes'],
   ];
   let content;
   if(tab==='crear') content = renderCrearExamen();
@@ -789,6 +798,7 @@ function renderProfesorShell(){
   else if(tab==='calificaciones') content = renderCalificaciones();
   else if(tab==='grupos') content = renderGrupos();
   else if(tab==='alumnos') content = renderAlumnosAdmin();
+  else if(tab==='solicitudes') content = renderSolicitudesProfesor();
   else content = renderReportes();
 
   return `
@@ -803,6 +813,30 @@ function renderProfesorShell(){
       <div class="breadcrumb">Clave ${session.clave||'—'} ${session.materia?('· '+session.materia):''}</div>
       ${content}
     </div>
+  </div>`;
+}
+
+function renderSolicitudesProfesor(){
+  const pendientes = DB.teachers.filter(t=>t.aprobado===false);
+  if(!pendientes.length){
+    return `<div class="card"><p class="hint">No hay solicitudes de profesor pendientes por el momento.</p></div>`;
+  }
+  return `
+  <div class="card">
+    <h2>Solicitudes pendientes</h2>
+    <p class="hint" style="margin-bottom:14px;">Estas personas se registraron con el código institucional correcto y esperan tu aprobación para poder entrar como profesores.</p>
+    ${pendientes.map(t=>`
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--line);">
+        <div>
+          <div style="font-weight:700;">${t.name}</div>
+          <div class="hint">Clave: ${t.clave} ${t.materia?('· '+t.materia):''} ${t.email?('· '+t.email):''}</div>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-primary" data-approve-teacher="${t.id}">Aprobar</button>
+          <button class="btn btn-danger" data-reject-teacher="${t.id}">Rechazar</button>
+        </div>
+      </div>
+    `).join('')}
   </div>`;
 }
 
@@ -1064,6 +1098,7 @@ function bindEvents(){
     const t = DB.teachers.find(x=>x.clave.toLowerCase()===clave.toLowerCase());
     btnEntrarProfesor.disabled = false;
     if(!t){ toast('No encontramos esa clave. Regístrate primero.'); viewState.authModeProf='register'; render(); return; }
+    if(t.aprobado===false){ toast('Tu cuenta aún está pendiente de aprobación por otro profesor registrado.'); return; }
     session = { role:'profesor', name:t.name, clave:t.clave, materia:t.materia };
     viewState.route='profesor'; viewState.teacherTab='crear';
     draftQuestions = [];
@@ -1075,20 +1110,28 @@ function bindEvents(){
     const clave = document.getElementById('reg-prof-clave').value.trim();
     const materia = document.getElementById('reg-prof-materia').value.trim();
     const email = document.getElementById('reg-prof-correo').value.trim();
+    const codigo = document.getElementById('reg-prof-codigo').value.trim();
     if(!name||!clave){ toast('Nombre y clave son obligatorios.'); return; }
+    if(codigo.toLowerCase()!==TEACHER_ACCESS_CODE.toLowerCase()){ toast('El código institucional no es correcto.'); return; }
     btnRegistrarProfesor.disabled = true; btnRegistrarProfesor.textContent = 'Creando…';
-    const teacher = {id:uid(), name, clave, materia, email};
-    let ok = true;
+    let ok = true, isFirst = false, aprobado = false;
     await mutateCollection('teachers', STORE_KEYS.teachers, 'los profesores', arr=>{
       if(arr.find(x=>x.clave.toLowerCase()===clave.toLowerCase())){ ok=false; return arr; }
-      arr.push(teacher); return arr;
+      isFirst = arr.length===0;
+      aprobado = isFirst;
+      arr.push({id:uid(), name, clave, materia, email, aprobado});
+      return arr;
     });
     btnRegistrarProfesor.disabled = false; btnRegistrarProfesor.textContent = 'Crear cuenta';
     if(!ok){ toast('Esa clave ya está registrada. Inicia sesión.'); viewState.authModeProf='login'; render(); return; }
+    if(!aprobado){
+      toast('Cuenta creada. Un profesor ya registrado debe aprobarla antes de que puedas entrar.');
+      viewState.authModeProf='login'; render(); return;
+    }
     session = { role:'profesor', name, clave, materia };
     viewState.route='profesor'; viewState.teacherTab='crear';
     draftQuestions = [];
-    toast('Cuenta de profesor creada con éxito.');
+    toast('Cuenta de profesor creada con éxito. Eres el primer profesor, quedaste aprobado automáticamente.');
     render();
   };
 
@@ -1135,6 +1178,25 @@ function bindEvents(){
 
   // teacher tabs
   document.querySelectorAll('[data-teacher-tab]').forEach(el=>el.onclick=()=>{ viewState.teacherTab = el.dataset.teacherTab; render(); });
+  document.querySelectorAll('[data-approve-teacher]').forEach(el=>el.onclick=async ()=>{
+    const id = el.dataset.approveTeacher;
+    el.disabled = true;
+    await mutateCollection('teachers', STORE_KEYS.teachers, 'los profesores', arr=>{
+      const t = arr.find(x=>x.id===id);
+      if(t) t.aprobado = true;
+      return arr;
+    });
+    toast('Profesor aprobado.');
+    render();
+  });
+  document.querySelectorAll('[data-reject-teacher]').forEach(el=>el.onclick=async ()=>{
+    if(!confirm('¿Rechazar y eliminar esta solicitud de profesor?')) return;
+    const id = el.dataset.rejectTeacher;
+    el.disabled = true;
+    await mutateCollection('teachers', STORE_KEYS.teachers, 'los profesores', arr=> arr.filter(x=>x.id!==id));
+    toast('Solicitud rechazada.');
+    render();
+  });
 
   // question builder
   if(viewState.teacherTab==='crear') renderQuestionsList();
