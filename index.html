@@ -1081,6 +1081,10 @@ function renderReportes(){
   DB.attempts.forEach(a=>{ porExamen[a.examTitle] = (porExamen[a.examTitle]||0)+1; });
 
   return `
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+    <h2 style="margin:0;">Reportes generales</h2>
+    <button class="btn btn-danger btn-sm" data-clear-historial-global ${DB.attempts.length===0?'disabled':''}>🗑️ Borrar todo el historial de calificaciones</button>
+  </div>
   <div class="grid-4">
     <div class="stat"><div class="label">Total de alumnos</div><div class="value">${totalAlumnos}</div></div>
     <div class="stat"><div class="label">Exámenes aplicados</div><div class="value">${examenesAplicados}</div></div>
@@ -1266,6 +1270,16 @@ function bindEvents(){
     clearHistorial.disabled = true; clearHistorial.textContent = 'Borrando…';
     await mutateCollection('attempts', STORE_KEYS.attempts, 'los intentos', arr=> arr.filter(a=>a.grupo!==g));
     toast('Historial de calificaciones del grupo '+g+' borrado.');
+    render();
+  };
+  const clearHistorialGlobal = document.querySelector('[data-clear-historial-global]');
+  if(clearHistorialGlobal) clearHistorialGlobal.onclick = async ()=>{
+    const n = DB.attempts.length;
+    if(!confirm(`¿Borrar TODO el historial de calificaciones de TODOS los grupos? Se eliminarán ${n} presentación(es) en total. Los alumnos y exámenes NO se tocan. Esta acción no se puede deshacer.`)) return;
+    if(!confirm('Confirma una vez más: esto afecta a todos los grupos y es permanente. ¿Continuar?')) return;
+    clearHistorialGlobal.disabled = true; clearHistorialGlobal.textContent = 'Borrando…';
+    await mutateCollection('attempts', STORE_KEYS.attempts, 'los intentos', arr=> []);
+    toast('Todo el historial de calificaciones fue borrado.');
     render();
   };
   document.querySelectorAll('[data-approve-teacher]').forEach(el=>el.onclick=async ()=>{
