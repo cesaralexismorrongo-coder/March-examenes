@@ -274,7 +274,7 @@ function supabaseHeaders(extra){
 
 let session = null; // {role:'alumno'|'profesor', name, matricula, grupo}
 let currentAttempt = null; // examen en curso
-let viewState = { teacherTab:'crear', studentTab:'disponibles', route:'landing' };
+let viewState = { teacherTab:'crear', studentTab:'disponibles', route:'landing', grupoSeleccionado:null };
 
 const FOX_SVG = (size=40, dark=true) => `
 <svg width="${size}" height="${size}" viewBox="0 0 100 100" fill="none">
@@ -976,24 +976,59 @@ function renderAlumnosAdmin(){
 function renderGrupos(){
   const grupos = groupList();
   if(grupos.length===0) return `<div class="empty"><b>Aún no hay grupos</b>Los grupos aparecen en cuanto se registran alumnos o se publica un examen.</div>`;
-  return `<div class="card"><h2>Grupos disponibles</h2>
-  <table><thead><tr><th>Grupo</th><th>Alumnos</th><th>Exámenes asignados</th><th>Presentaciones</th><th>Promedio</th></tr></thead>
-  <tbody>
-  ${grupos.map(g=>{
-    const alumnos = DB.students.filter(s=>s.grupo===g).length;
-    const examenes = DB.exams.filter(e=>e.grupo===g).length;
-    const attempts = DB.attempts.filter(a=>a.grupo===g);
-    const graded = attempts.filter(a=>a.status==='calificado');
-    const prom = graded.length ? (graded.reduce((s,a)=>s+(a.totalScore/a.maxScore*10),0)/graded.length) : null;
-    return `<tr>
-      <td><b>${g}</b></td>
-      <td>${alumnos}</td>
-      <td>${examenes}</td>
-      <td>${attempts.length}</td>
-      <td>${prom!==null ? prom.toFixed(1) : '—'}</td>
-    </tr>`;
-  }).join('')}
-  </tbody></table>
+
+  if(!viewState.grupoSeleccionado || !grupos.includes(viewState.grupoSeleccionado)){
+    return `<div class="card">
+      <h2>Selecciona un grupo</h2>
+      <p class="hint" style="margin-bottom:14px;">Entra a un grupo para ver solo sus alumnos, exámenes y calificaciones.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;">
+        ${grupos.map(g=>{
+          const alumnos = DB.students.filter(s=>s.grupo===g).length;
+          return `<button class="btn btn-outline" data-select-grupo="${g}" style="min-width:120px;">
+            <div style="font-weight:700;font-size:16px;">${g}</div>
+            <div class="hint" style="font-size:12px;">${alumnos} alumno${alumnos===1?'':'s'}</div>
+          </button>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }
+
+  const g = viewState.grupoSeleccionado;
+  const alumnos = DB.students.filter(s=>s.grupo===g);
+  const examenes = DB.exams.filter(e=>e.grupo===g);
+  const attempts = DB.attempts.filter(a=>a.grupo===g);
+  const graded = attempts.filter(a=>a.status==='calificado');
+  const prom = graded.length ? (graded.reduce((s,a)=>s+(a.totalScore/a.maxScore*10),0)/graded.length) : null;
+
+  return `<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+      <h2 style="margin:0;">Grupo ${g}</h2>
+      <button class="btn btn-ghost" data-back-grupos>← Ver todos los grupos</button>
+    </div>
+    <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:20px;">
+      <div><div class="hint">Alumnos</div><div style="font-size:22px;font-weight:700;">${alumnos.length}</div></div>
+      <div><div class="hint">Exámenes asignados</div><div style="font-size:22px;font-weight:700;">${examenes.length}</div></div>
+      <div><div class="hint">Presentaciones</div><div style="font-size:22px;font-weight:700;">${attempts.length}</div></div>
+      <div><div class="hint">Promedio</div><div style="font-size:22px;font-weight:700;">${prom!==null ? prom.toFixed(1) : '—'}</div></div>
+    </div>
+
+    <h3>Alumnos del grupo</h3>
+    ${alumnos.length ? `<table><thead><tr><th>Nombre</th><th>Matrícula</th><th>Grado</th><th>Correo</th></tr></thead><tbody>
+      ${alumnos.map(s=>`<tr><td>${s.name}</td><td>${s.matricula}</td><td>${s.grado||'—'}</td><td>${s.email||'—'}</td></tr>`).join('')}
+    </tbody></table>` : `<p class="hint">Aún no hay alumnos registrados en este grupo.</p>`}
+
+    <h3 style="margin-top:22px;">Exámenes de este grupo</h3>
+    ${examenes.length ? `<table><thead><tr><th>Título</th><th>Materia</th><th>Preguntas</th><th>Presentaciones</th></tr></thead><tbody>
+      ${examenes.map(e=>{
+        const n = attempts.filter(a=>a.examId===e.id).length;
+        return `<tr><td>${e.title}</td><td>${e.materia||'—'}</td><td>${e.questions.length}</td><td>${n}</td></tr>`;
+      }).join('')}
+    </tbody></table>` : `<p class="hint">Aún no hay exámenes asignados a este grupo.</p>`}
+
+    <h3 style="margin-top:22px;">Calificaciones de este grupo</h3>
+    ${attempts.length ? `<table><thead><tr><th>Alumno</th><th>Examen</th><th>Fecha</th><th>Estado</th><th>Calificación</th></tr></thead><tbody>
+      ${attempts.map(a=>`<tr><td>${a.studentName}</td><td>${a.examTitle}</td><td>${new Date(a.date).toLocaleDateString()}</td><td>${a.status}</td><td>${a.status==='calificado' ? (a.totalScore/a.maxScore*10).toFixed(1) : '—'}</td></tr>`).join('')}
+    </tbody></table>` : `<p class="hint">Aún no hay presentaciones en este grupo.</p>`}
   </div>`;
 }
 
@@ -1034,7 +1069,7 @@ function bindEvents(){
     render();
   });
   const logout = document.querySelector('[data-logout]');
-  if(logout) logout.onclick = ()=>{ session=null; viewState.route='landing'; render(); };
+  if(logout) logout.onclick = ()=>{ session=null; viewState.route='landing'; viewState.grupoSeleccionado=null; render(); };
 
   // login / registro alumno
   document.querySelectorAll('[data-auth-mode]').forEach(el=>el.onclick = (ev)=>{
@@ -1178,6 +1213,9 @@ function bindEvents(){
 
   // teacher tabs
   document.querySelectorAll('[data-teacher-tab]').forEach(el=>el.onclick=()=>{ viewState.teacherTab = el.dataset.teacherTab; render(); });
+  document.querySelectorAll('[data-select-grupo]').forEach(el=>el.onclick=()=>{ viewState.grupoSeleccionado = el.dataset.selectGrupo; render(); });
+  const backGrupos = document.querySelector('[data-back-grupos]');
+  if(backGrupos) backGrupos.onclick = ()=>{ viewState.grupoSeleccionado = null; render(); };
   document.querySelectorAll('[data-approve-teacher]').forEach(el=>el.onclick=async ()=>{
     const id = el.dataset.approveTeacher;
     el.disabled = true;
