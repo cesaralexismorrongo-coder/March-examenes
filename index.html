@@ -361,6 +361,22 @@ async function mutateCollection(dbKey, storeKey, label, mutatorFn){
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function shuffle(arr){ const a=[...arr]; for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
 
+// Agrupa las preguntas por su etiqueta "variante" (si tienen) y elige UNA al azar
+// por cada grupo, así dos alumnos pueden tener el mismo tema con redacción distinta.
+function elegirVariantesAleatorias(questions){
+  const grupos = {};
+  const orden = [];
+  questions.forEach(q=>{
+    const key = (q.variante && q.variante.trim()) ? q.variante.trim().toLowerCase() : ('__sola_'+q.id);
+    if(!grupos[key]){ grupos[key]=[]; orden.push(key); }
+    grupos[key].push(q);
+  });
+  return orden.map(key=>{
+    const opciones = grupos[key];
+    return opciones[Math.floor(Math.random()*opciones.length)];
+  });
+}
+
 function toast(msg){
   const t = document.createElement('div');
   t.className='toast';
@@ -622,7 +638,7 @@ function renderAlumnoHistorial(){
 function startExam(examId){
   const exam = DB.exams.find(e=>e.id===examId);
   if(!exam) return;
-  let qs = shuffle(exam.questions);
+  let qs = shuffle(elegirVariantesAleatorias(exam.questions));
   if(exam.numAleatorio && exam.numAleatorio < qs.length) qs = qs.slice(0, exam.numAleatorio);
   qs = qs.map(q=> q.type==='mc' ? {...q, options: shuffle(q.options)} : q);
   currentAttempt = {
@@ -865,9 +881,18 @@ function renderCrearExamen(){
   <div class="card">
     <h2>Banco de preguntas <span style="font-weight:400;color:var(--ink-soft);font-size:13px">(<span id="q-count">0</span> agregadas)</span></h2>
     <div id="questions-list"></div>
-    <div style="display:flex;gap:10px;margin-top:6px;">
+    <div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;">
       <button class="btn btn-outline btn-sm" id="btn-add-mc">+ Opción múltiple</button>
       <button class="btn btn-outline btn-sm" id="btn-add-open">+ Pregunta abierta</button>
+      <button class="btn btn-outline btn-sm" id="btn-toggle-import">🤖 Importar preguntas generadas con IA</button>
+    </div>
+    <div id="import-ia-wrap" style="display:none;margin-top:14px;padding:14px;border:1px dashed var(--line);border-radius:10px;">
+      <p class="hint" style="margin-bottom:8px;">
+        Pídele a Claude (en chat.claude.com o donde tengas acceso) que te genere preguntas de examen en formato JSON para MARCH, dándole el tema y cuántas preguntas quieres.
+        Pega aquí el resultado y dale "Agregar al banco".
+      </p>
+      <textarea id="import-ia-text" rows="6" style="width:100%;font-family:monospace;font-size:12.5px;" placeholder='[{"type":"mc","text":"¿Cuál es...?","points":2,"options":[{"text":"Opción A","correct":true},{"text":"Opción B","correct":false},{"text":"Opción C","correct":false},{"text":"Opción D","correct":false}]},{"type":"open","text":"Explica...","points":5}]'></textarea>
+      <button class="btn btn-primary btn-sm" id="btn-import-ia" style="margin-top:8px;">Agregar al banco</button>
     </div>
   </div>
   <button class="btn btn-primary" id="btn-save-exam">Guardar y publicar examen</button>
@@ -888,7 +913,11 @@ function renderQuestionsList(){
         <button class="btn btn-ghost btn-sm" data-del-q="${idx}">Eliminar</button>
       </div>
       <div class="field"><label>Enunciado</label><input type="text" data-q-text="${idx}" value="${escapeAttr(q.text)}" placeholder="Escribe la pregunta…"></div>
-      <div class="field" style="max-width:140px;"><label>Puntos</label><input type="number" data-q-points="${idx}" value="${q.points}" min="1"></div>
+      <div style="display:flex;gap:12px;">
+        <div class="field" style="max-width:140px;"><label>Puntos</label><input type="number" data-q-points="${idx}" value="${q.points}" min="1"></div>
+        <div class="field" style="flex:1;"><label>Variante/Tema (opcional)</label><input type="text" data-q-variante="${idx}" value="${escapeAttr(q.variante||'')}" placeholder="Ej. unidad2-concepto3"></div>
+      </div>
+      <p class="hint" style="margin:-4px 0 8px;">Si varias preguntas comparten el mismo texto aquí, el sistema solo le mostrará UNA (al azar) a cada alumno — útil para tener redacciones distintas del mismo tema.</p>
       ${q.type==='mc' ? q.options.map((o,oi)=>`
         <div class="opt-row">
           <input type="radio" name="correct-${idx}" ${o.correct?'checked':''} data-q-correct="${idx}:${oi}">
@@ -1322,6 +1351,35 @@ function bindEvents(){
   if(btnAddMc) btnAddMc.onclick = ()=>{ draftQuestions.push({id:uid(), type:'mc', text:'', points:2, options:[{text:'',correct:true},{text:'',correct:false},{text:'',correct:false},{text:'',correct:false}]}); renderQuestionsList(); bindDraftEvents(); };
   const btnAddOpen = document.getElementById('btn-add-open');
   if(btnAddOpen) btnAddOpen.onclick = ()=>{ draftQuestions.push({id:uid(), type:'open', text:'', points:5}); renderQuestionsList(); bindDraftEvents(); };
+  const btnToggleImport = document.getElementById('btn-toggle-import');
+  if(btnToggleImport) btnToggleImport.onclick = ()=>{
+    const wrap = document.getElementById('import-ia-wrap');
+    wrap.style.display = wrap.style.display==='none' ? 'block' : 'none';
+  };
+  const btnImportIa = document.getElementById('btn-import-ia');
+  if(btnImportIa) btnImportIa.onclick = ()=>{
+    const raw = document.getElementById('import-ia-text').value.trim();
+    if(!raw){ toast('Pega primero el JSON con las preguntas.'); return; }
+    let parsed;
+    try{ parsed = JSON.parse(raw); }
+    catch(e){ toast('Ese texto no es JSON válido. Revisa que esté completo y bien copiado.'); return; }
+    if(!Array.isArray(parsed)){ toast('El JSON debe ser una lista de preguntas entre corchetes [ ].'); return; }
+    let agregadas = 0, invalidas = 0;
+    parsed.forEach(q=>{
+      if(!q || typeof q.text!=='string' || !q.text.trim() || (q.type!=='mc' && q.type!=='open')){ invalidas++; return; }
+      if(q.type==='mc'){
+        if(!Array.isArray(q.options) || q.options.length<2 || !q.options.some(o=>o.correct) || q.options.some(o=>typeof o.text!=='string' || !o.text.trim())){ invalidas++; return; }
+        draftQuestions.push({id:uid(), type:'mc', text:q.text.trim(), points:Number(q.points)||2, variante:(q.variante||'').trim(), options:q.options.map(o=>({text:o.text.trim(), correct:!!o.correct}))});
+      }else{
+        draftQuestions.push({id:uid(), type:'open', text:q.text.trim(), points:Number(q.points)||5, variante:(q.variante||'').trim()});
+      }
+      agregadas++;
+    });
+    renderQuestionsList(); bindDraftEvents();
+    document.getElementById('import-ia-text').value = '';
+    if(agregadas) toast(`${agregadas} pregunta(s) agregada(s) al banco.` + (invalidas ? ` ${invalidas} se saltaron por formato inválido.` : ''));
+    else toast('No se pudo agregar ninguna pregunta. Revisa el formato del JSON.');
+  };
   bindDraftEvents();
 
   const btnSaveExam = document.getElementById('btn-save-exam');
@@ -1406,6 +1464,7 @@ function bindDraftEvents(){
   document.querySelectorAll('[data-del-q]').forEach(el=>el.onclick=()=>{ draftQuestions.splice(parseInt(el.dataset.delQ),1); renderQuestionsList(); bindDraftEvents(); });
   document.querySelectorAll('[data-q-text]').forEach(el=>el.oninput=()=>{ draftQuestions[parseInt(el.dataset.qText)].text = el.value; });
   document.querySelectorAll('[data-q-points]').forEach(el=>el.oninput=()=>{ draftQuestions[parseInt(el.dataset.qPoints)].points = parseFloat(el.value)||1; });
+  document.querySelectorAll('[data-q-variante]').forEach(el=>el.oninput=()=>{ draftQuestions[parseInt(el.dataset.qVariante)].variante = el.value; });
   document.querySelectorAll('[data-q-opt]').forEach(el=>el.oninput=()=>{ const [qi,oi]=el.dataset.qOpt.split(':').map(Number); draftQuestions[qi].options[oi].text = el.value; });
   document.querySelectorAll('[data-q-correct]').forEach(el=>el.onchange=()=>{ const [qi,oi]=el.dataset.qCorrect.split(':').map(Number); draftQuestions[qi].options.forEach((o,i)=>o.correct = (i===oi)); });
 }
