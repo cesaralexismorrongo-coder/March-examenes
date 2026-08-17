@@ -1466,7 +1466,8 @@ function bindEvents(){
       }
     }catch(e){
       console.error(e);
-      status.textContent = 'No se pudo generar. Revisa tu conexión a internet (la primera vez necesita descargar el modelo) o intenta de nuevo.';
+      status.textContent = 'No se pudo generar. Detalle técnico: ' + (e && e.message ? e.message : String(e));
+      console.error('Error generando preguntas con IA:', e);
     }
     btnGenerarIa.disabled = false;
   };
