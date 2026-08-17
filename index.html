@@ -640,24 +640,35 @@ function startExam(examId){
   if(!exam) return;
   let qs = shuffle(elegirVariantesAleatorias(exam.questions));
   if(exam.numAleatorio && exam.numAleatorio < qs.length) qs = qs.slice(0, exam.numAleatorio);
-  qs = qs.map(q=> q.type==='mc' ? {...q, options: shuffle(q.options)} : q);
+  qs = qs.map(q=>{
+    if(q.type==='mc') return {...q, options: shuffle(q.options)};
+    if(q.type==='match') return {...q, rightShuffled: shuffle(q.pairs.map((p,i)=>({text:p.right, idx:i})))};
+    return q;
+  });
   currentAttempt = {
     id: uid(), examId: exam.id, examTitle: exam.title, materia: exam.materia,
     studentName: session.name, matricula: session.matricula, grupo: session.grupo,
     questions: qs, current:0,
-    answers: qs.map(q=>({questionId:q.id, type:q.type, answer:null})),
+    answers: qs.map(q=>({questionId:q.id, type:q.type, answer: q.type==='match' ? new Array(q.pairs.length).fill(null) : null})),
     startedAt: Date.now(), durationMin: exam.duracionMin
   };
   viewState.route='examen';
   render();
 }
 
+function isAnswered(a){
+  if(Array.isArray(a.answer)) return a.answer.length>0 && a.answer.every(x=>x!==null);
+  return a.answer!==null && a.answer!=='';
+}
+
+const TIPO_LABELS = {mc:'Opción múltiple', vf:'Verdadero o falso', match:'Relación de columnas', open:'Pregunta abierta'};
+
 function renderExamTaking(){
   const at = currentAttempt;
   const q = at.questions[at.current];
   const ans = at.answers[at.current];
   const progress = at.answers.map((a,i)=>{
-    const cls = i===at.current ? 'current' : (a.answer!==null && a.answer!=='' ? 'answered':'');
+    const cls = i===at.current ? 'current' : (isAnswered(a) ? 'answered':'');
     return `<div class="dot ${cls}"></div>`;
   }).join('');
 
@@ -668,6 +679,29 @@ function renderExamTaking(){
         <input type="radio" name="mc" ${ans.answer===i?'checked':''}>
         <span>${opt.text}</span>
       </div>`).join('');
+  } else if(q.type==='vf'){
+    body = `
+      <div class="mc-option ${ans.answer===true?'selected':''}" data-select-vf="true">
+        <input type="radio" name="vf" ${ans.answer===true?'checked':''}>
+        <span>Verdadero</span>
+      </div>
+      <div class="mc-option ${ans.answer===false?'selected':''}" data-select-vf="false">
+        <input type="radio" name="vf" ${ans.answer===false?'checked':''}>
+        <span>Falso</span>
+      </div>`;
+  } else if(q.type==='match'){
+    body = `<table style="width:100%;border-collapse:separate;border-spacing:0 8px;">
+      ${q.pairs.map((p,li)=>`
+        <tr>
+          <td style="padding:10px 14px;background:#fff;border:1.5px solid var(--border);border-radius:10px 0 0 10px;font-weight:600;">${p.left}</td>
+          <td style="padding:0 0 0 8px;border:none;width:46%;">
+            <select data-match-select="${li}" style="width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:14px;font-family:inherit;background:#fff;">
+              <option value="">Selecciona…</option>
+              ${q.rightShuffled.map(r=>`<option value="${r.idx}" ${ans.answer[li]===r.idx?'selected':''}>${r.text}</option>`).join('')}
+            </select>
+          </td>
+        </tr>`).join('')}
+    </table>`;
   } else {
     body = `<textarea id="open-answer" rows="7" placeholder="Escribe tu respuesta…">${ans.answer||''}</textarea>`;
   }
@@ -681,7 +715,7 @@ function renderExamTaking(){
     </div>
     <div class="exam-body"><div class="exam-inner">
       <div class="exam-progress">${progress}</div>
-      <div class="q-points">${q.type==='mc'?'Opción múltiple':'Pregunta abierta'} · ${q.points} pts</div>
+      <div class="q-points">${TIPO_LABELS[q.type]||''} · ${q.points} pts</div>
       <div class="q-text">${q.text}</div>
       ${body}
     </div></div>
@@ -724,10 +758,20 @@ async function finishExam(){
   const at = currentAttempt;
   let mcScore=0, mcMax=0, openMax=0, hasOpen=false;
   at.questions.forEach((q,i)=>{
+    const ans = at.answers[i];
     if(q.type==='mc'){
       mcMax += q.points;
-      const chosenIdx = at.answers[i].answer;
+      const chosenIdx = ans.answer;
       if(chosenIdx!==null && q.options[chosenIdx] && q.options[chosenIdx].correct) mcScore += q.points;
+    } else if(q.type==='vf'){
+      mcMax += q.points;
+      if(ans.answer===q.correct) mcScore += q.points;
+    } else if(q.type==='match'){
+      mcMax += q.points;
+      const total = q.pairs.length;
+      let correctCount = 0;
+      if(Array.isArray(ans.answer)) ans.answer.forEach((sel,li)=>{ if(sel===li) correctCount++; });
+      mcScore += q.points * (correctCount/total);
     } else {
       openMax += q.points; hasOpen = true;
     }
@@ -776,14 +820,14 @@ function renderResultado(){
       </table>
       <div class="rs-score">
         ${pending
-          ? `<div class="big">⏳</div><div class="of">Opción múltiple: ${at.mcScore}/${at.mcMax} · Preguntas abiertas pendientes de revisión</div>`
+          ? `<div class="big">⏳</div><div class="of">Reactivos automáticos: ${at.mcScore}/${at.mcMax} · Preguntas abiertas pendientes de revisión</div>`
           : `<div class="big">${at.totalScore.toFixed(1)} <span style="font-size:22px;color:var(--ink-soft)">/ ${at.maxScore}</span></div><div class="of">Calificación final</div>`
         }
       </div>
       <table class="rs-table">
         <thead><tr><th>Sección</th><th>Obtenido</th><th>Máximo</th></tr></thead>
         <tbody>
-          <tr><td>Opción múltiple</td><td>${at.mcScore}</td><td>${at.mcMax}</td></tr>
+          <tr><td>Reactivos automáticos (opción múltiple, V/F, relación)</td><td>${at.mcScore}</td><td>${at.mcMax}</td></tr>
           <tr><td>Preguntas abiertas</td><td>${pending?'—':at.openScore}</td><td>${at.openMax}</td></tr>
         </tbody>
       </table>
@@ -883,36 +927,22 @@ function renderCrearExamen(){
     <div id="questions-list"></div>
     <div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;">
       <button class="btn btn-outline btn-sm" id="btn-add-mc">+ Opción múltiple</button>
+      <button class="btn btn-outline btn-sm" id="btn-add-vf">+ Verdadero/Falso</button>
+      <button class="btn btn-outline btn-sm" id="btn-add-match">+ Relación de columnas</button>
       <button class="btn btn-outline btn-sm" id="btn-add-open">+ Pregunta abierta</button>
-      <button class="btn btn-primary btn-sm" id="btn-toggle-gen-ia">✨ Generar preguntas con IA (gratis, automático)</button>
-      <button class="btn btn-outline btn-sm" id="btn-toggle-import">🤖 Pegar JSON manualmente</button>
-    </div>
-    <div id="gen-ia-wrap" style="display:none;margin-top:14px;padding:14px;border:1px dashed var(--line);border-radius:10px;">
-      <p class="hint" style="margin-bottom:8px;">
-        Escribe el tema y la IA genera las preguntas automáticamente, aquí mismo, sin salir de la página.
-        Requiere una computadora con Chrome o Edge actualizado (no funciona en todos los celulares).
-        La primera vez descarga un modelo de IA (~1-2 GB) y puede tardar varios minutos; después será más rápido.
-      </p>
-      <div class="field-row">
-        <div class="field"><label>Tema</label><input id="gen-ia-tema" type="text" placeholder="Ej. Normas ISO 9001"></div>
-        <div class="field" style="max-width:120px;"><label># Preguntas</label><input id="gen-ia-cantidad" type="number" value="5" min="1" max="15"></div>
-        <div class="field" style="max-width:180px;"><label>Tipo</label>
-          <select id="gen-ia-tipo">
-            <option value="mixto">Mixto</option>
-            <option value="mc">Solo opción múltiple</option>
-            <option value="open">Solo abiertas</option>
-          </select>
-        </div>
-      </div>
-      <button class="btn btn-primary btn-sm" id="btn-generar-ia">Generar preguntas</button>
-      <p id="gen-ia-status" class="hint" style="margin-top:8px;"></p>
+      <button class="btn btn-primary btn-sm" id="btn-toggle-import">📋 Pegar preguntas en JSON</button>
     </div>
     <div id="import-ia-wrap" style="display:none;margin-top:14px;padding:14px;border:1px dashed var(--line);border-radius:10px;">
       <p class="hint" style="margin-bottom:8px;">
-        Pídele a Claude (en chat.claude.com o donde tengas acceso) que te genere preguntas de examen en formato JSON para MARCH, dándole el tema y cuántas preguntas quieres.
-        Pega aquí el resultado y dale "Agregar al banco".
+        Pídele a una IA de texto (por ejemplo, Claude en chat.claude.com) que te genere preguntas de examen en formato JSON para MARCH, dándole el tema y cuántas preguntas quieres.
+        Pega aquí el resultado y dale "Agregar al banco". Tipos de pregunta admitidos: <code>mc</code> (opción múltiple), <code>vf</code> (verdadero/falso), <code>match</code> (relación de columnas) y <code>open</code> (abierta).
       </p>
-      <textarea id="import-ia-text" rows="6" style="width:100%;font-family:monospace;font-size:12.5px;" placeholder='[{"type":"mc","text":"¿Cuál es...?","points":2,"options":[{"text":"Opción A","correct":true},{"text":"Opción B","correct":false},{"text":"Opción C","correct":false},{"text":"Opción D","correct":false}]},{"type":"open","text":"Explica...","points":5}]'></textarea>
+      <textarea id="import-ia-text" rows="8" style="width:100%;font-family:monospace;font-size:12.5px;" placeholder='[
+  {"type":"mc","text":"¿Cuál es...?","points":2,"options":[{"text":"Opción A","correct":true},{"text":"Opción B","correct":false},{"text":"Opción C","correct":false},{"text":"Opción D","correct":false}]},
+  {"type":"vf","text":"El agua hierve a 100°C al nivel del mar.","points":1,"correct":true},
+  {"type":"match","text":"Relaciona cada concepto con su definición.","points":4,"pairs":[{"left":"Concepto A","right":"Definición A"},{"left":"Concepto B","right":"Definición B"}]},
+  {"type":"open","text":"Explica...","points":5}
+]'></textarea>
       <button class="btn btn-primary btn-sm" id="btn-import-ia" style="margin-top:8px;">Agregar al banco</button>
     </div>
   </div>
@@ -927,10 +957,11 @@ function renderQuestionsList(){
   if(!list) return;
   count.textContent = draftQuestions.length;
   if(draftQuestions.length===0){ list.innerHTML = `<div class="empty" style="padding:26px;">Agrega al menos una pregunta al banco.</div>`; return; }
+  const typeLabels = {mc:'Opción múltiple', vf:'Verdadero/Falso', match:'Relación de columnas', open:'Abierta'};
   list.innerHTML = draftQuestions.map((q,idx)=>`
     <div class="qcard">
       <div class="qhead">
-        <span class="qtype-badge">${q.type==='mc'?'Opción múltiple':'Abierta'}</span>
+        <span class="qtype-badge">${typeLabels[q.type]||q.type}</span>
         <button class="btn btn-ghost btn-sm" data-del-q="${idx}">Eliminar</button>
       </div>
       <div class="field"><label>Enunciado</label><input type="text" data-q-text="${idx}" value="${escapeAttr(q.text)}" placeholder="Escribe la pregunta…"></div>
@@ -944,6 +975,25 @@ function renderQuestionsList(){
           <input type="radio" name="correct-${idx}" ${o.correct?'checked':''} data-q-correct="${idx}:${oi}">
           <input type="text" value="${escapeAttr(o.text)}" placeholder="Opción ${oi+1}" data-q-opt="${idx}:${oi}">
         </div>`).join('') : ''}
+      ${q.type==='vf' ? `
+        <div class="opt-row">
+          <input type="radio" name="vf-${idx}" ${q.correct===true?'checked':''} data-q-vf="${idx}:true">
+          <span>Verdadero</span>
+        </div>
+        <div class="opt-row">
+          <input type="radio" name="vf-${idx}" ${q.correct===false?'checked':''} data-q-vf="${idx}:false">
+          <span>Falso</span>
+        </div>` : ''}
+      ${q.type==='match' ? `
+        <label style="display:block;font-size:12px;font-weight:600;color:var(--ink-soft);margin-bottom:5px;text-transform:uppercase;letter-spacing:.04em;">Pares a relacionar</label>
+        ${q.pairs.map((p,pi)=>`
+          <div class="opt-row">
+            <input type="text" value="${escapeAttr(p.left)}" placeholder="Columna A" data-q-match-left="${idx}:${pi}" style="flex:1;">
+            <span class="hint" style="margin:0;">↔</span>
+            <input type="text" value="${escapeAttr(p.right)}" placeholder="Columna B" data-q-match-right="${idx}:${pi}" style="flex:1;">
+            <button class="btn btn-ghost btn-sm" data-del-pair="${idx}:${pi}" ${q.pairs.length<=2?'disabled':''}>✕</button>
+          </div>`).join('')}
+        <button class="btn btn-ghost btn-sm" data-add-pair="${idx}" style="margin-top:4px;">+ Agregar par</button>` : ''}
     </div>`).join('');
 }
 function escapeAttr(s){ return (s||'').replace(/"/g,'&quot;'); }
@@ -951,8 +1001,9 @@ function escapeAttr(s){ return (s||'').replace(/"/g,'&quot;'); }
 function normalizeGrupo(s){ return (s||'').trim().toUpperCase().replace(/\s+/g,''); }
 
 // Valida y agrega al banco de preguntas un texto que debería contener un JSON
-// con el formato [{type,text,points,options?,variante?}, ...]. Se usa tanto para
-// el pegado manual como para lo que genere la IA en el navegador.
+// con el formato [{type,text,points,options?,correct?,pairs?,variante?}, ...].
+// Tipos admitidos: mc (opción múltiple), vf (verdadero/falso), match (relación
+// de columnas) y open (abierta). Se usa para el pegado manual de JSON.
 function importarPreguntasDesdeTexto(raw){
   raw = (raw||'').trim();
   if(!raw) return { ok:false, error:'vacio' };
@@ -964,48 +1015,25 @@ function importarPreguntasDesdeTexto(raw){
   try{ parsed = JSON.parse(raw); }
   catch(e){ return { ok:false, error:'json' }; }
   if(!Array.isArray(parsed)) return { ok:false, error:'noArray' };
+  const tiposValidos = ['mc','vf','match','open'];
   let agregadas = 0, invalidas = 0;
   parsed.forEach(q=>{
-    if(!q || typeof q.text!=='string' || !q.text.trim() || (q.type!=='mc' && q.type!=='open')){ invalidas++; return; }
+    if(!q || typeof q.text!=='string' || !q.text.trim() || !tiposValidos.includes(q.type)){ invalidas++; return; }
     if(q.type==='mc'){
       if(!Array.isArray(q.options) || q.options.length<2 || !q.options.some(o=>o.correct) || q.options.some(o=>typeof o.text!=='string' || !o.text.trim())){ invalidas++; return; }
       draftQuestions.push({id:uid(), type:'mc', text:q.text.trim(), points:Number(q.points)||2, variante:(q.variante||'').trim(), options:q.options.map(o=>({text:o.text.trim(), correct:!!o.correct}))});
+    }else if(q.type==='vf'){
+      if(typeof q.correct!=='boolean'){ invalidas++; return; }
+      draftQuestions.push({id:uid(), type:'vf', text:q.text.trim(), points:Number(q.points)||1, variante:(q.variante||'').trim(), correct:q.correct});
+    }else if(q.type==='match'){
+      if(!Array.isArray(q.pairs) || q.pairs.length<2 || q.pairs.some(p=>!p || typeof p.left!=='string' || !p.left.trim() || typeof p.right!=='string' || !p.right.trim())){ invalidas++; return; }
+      draftQuestions.push({id:uid(), type:'match', text:q.text.trim(), points:Number(q.points)||4, variante:(q.variante||'').trim(), pairs:q.pairs.map(p=>({left:p.left.trim(), right:p.right.trim()}))});
     }else{
       draftQuestions.push({id:uid(), type:'open', text:q.text.trim(), points:Number(q.points)||5, variante:(q.variante||'').trim()});
     }
     agregadas++;
   });
   return { ok:true, agregadas, invalidas };
-}
-
-// ------------------------------------------------------------------
-// Generación de preguntas con IA gratuita, corriendo en el navegador
-// (WebLLM). No requiere API key ni servidor, pero la primera vez que
-// se usa descarga un modelo (~1-2 GB) y puede tardar varios minutos.
-// Requiere un navegador de escritorio compatible con WebGPU (Chrome/Edge recientes).
-// ------------------------------------------------------------------
-let webllmEngine = null;
-async function getWebLLMEngine(onProgress){
-  if(webllmEngine) return webllmEngine;
-  if(!navigator.gpu) throw new Error('sin_webgpu');
-  const webllm = await import('https://esm.run/@mlc-ai/web-llm');
-  webllmEngine = await webllm.CreateMLCEngine('Llama-3.2-3B-Instruct-q4f16_1-MLC', {
-    initProgressCallback: (report)=>{ if(onProgress) onProgress(report.text); }
-  });
-  return webllmEngine;
-}
-async function generarPreguntasIA(tema, cantidad, tipo, onProgress){
-  const engine = await getWebLLMEngine(onProgress);
-  const tipoInstruccion = tipo==='mc'
-    ? 'todas de opción múltiple (campo type:"mc") con exactamente 4 opciones cada una, solo una marcada como correcta'
-    : tipo==='open'
-    ? 'todas de tipo abierta (campo type:"open")'
-    : 'una mezcla de opción múltiple (type:"mc", 4 opciones, solo una correcta) y abiertas (type:"open")';
-  const prompt = `Genera ${cantidad} preguntas de examen en español, a nivel universitario, sobre el tema: "${tema}". ${tipoInstruccion}.
-Responde ÚNICAMENTE con un arreglo JSON válido, sin explicaciones ni texto adicional antes o después, con este formato exacto:
-[{"type":"mc","text":"...","points":2,"options":[{"text":"...","correct":true},{"text":"...","correct":false},{"text":"...","correct":false},{"text":"...","correct":false}]},{"type":"open","text":"...","points":5}]`;
-  const reply = await engine.chat.completions.create({ messages:[{role:'user', content:prompt}], temperature:0.7 });
-  return reply.choices[0].message.content;
 }
 
 // Calcula el promedio de calificación (0-10) agrupado por unidad, a partir de una lista de intentos calificados
@@ -1353,6 +1381,15 @@ function bindEvents(){
     currentAttempt.answers[currentAttempt.current].answer = parseInt(el.dataset.selectOpt);
     render(); startTimer();
   });
+  document.querySelectorAll('[data-select-vf]').forEach(el=>el.onclick=()=>{
+    currentAttempt.answers[currentAttempt.current].answer = (el.dataset.selectVf==='true');
+    render(); startTimer();
+  });
+  document.querySelectorAll('[data-match-select]').forEach(el=>el.onchange=()=>{
+    const li = parseInt(el.dataset.matchSelect);
+    currentAttempt.answers[currentAttempt.current].answer[li] = el.value===''? null : parseInt(el.value);
+    render(); startTimer();
+  });
   if(viewState.route==='examen') startTimer();
 
   // result print
@@ -1428,48 +1465,16 @@ function bindEvents(){
   if(viewState.teacherTab==='crear') renderQuestionsList();
   const btnAddMc = document.getElementById('btn-add-mc');
   if(btnAddMc) btnAddMc.onclick = ()=>{ draftQuestions.push({id:uid(), type:'mc', text:'', points:2, options:[{text:'',correct:true},{text:'',correct:false},{text:'',correct:false},{text:'',correct:false}]}); renderQuestionsList(); bindDraftEvents(); };
+  const btnAddVf = document.getElementById('btn-add-vf');
+  if(btnAddVf) btnAddVf.onclick = ()=>{ draftQuestions.push({id:uid(), type:'vf', text:'', points:1, correct:true}); renderQuestionsList(); bindDraftEvents(); };
+  const btnAddMatch = document.getElementById('btn-add-match');
+  if(btnAddMatch) btnAddMatch.onclick = ()=>{ draftQuestions.push({id:uid(), type:'match', text:'', points:4, pairs:[{left:'',right:''},{left:'',right:''}]}); renderQuestionsList(); bindDraftEvents(); };
   const btnAddOpen = document.getElementById('btn-add-open');
   if(btnAddOpen) btnAddOpen.onclick = ()=>{ draftQuestions.push({id:uid(), type:'open', text:'', points:5}); renderQuestionsList(); bindDraftEvents(); };
-  const btnToggleGenIa = document.getElementById('btn-toggle-gen-ia');
-  if(btnToggleGenIa) btnToggleGenIa.onclick = ()=>{
-    const wrap = document.getElementById('gen-ia-wrap');
-    wrap.style.display = wrap.style.display==='none' ? 'block' : 'none';
-  };
   const btnToggleImport = document.getElementById('btn-toggle-import');
   if(btnToggleImport) btnToggleImport.onclick = ()=>{
     const wrap = document.getElementById('import-ia-wrap');
     wrap.style.display = wrap.style.display==='none' ? 'block' : 'none';
-  };
-  const btnGenerarIa = document.getElementById('btn-generar-ia');
-  if(btnGenerarIa) btnGenerarIa.onclick = async ()=>{
-    const tema = document.getElementById('gen-ia-tema').value.trim();
-    const cantidad = Math.max(1, Math.min(15, parseInt(document.getElementById('gen-ia-cantidad').value)||5));
-    const tipo = document.getElementById('gen-ia-tipo').value;
-    const status = document.getElementById('gen-ia-status');
-    if(!tema){ toast('Escribe primero el tema de las preguntas.'); return; }
-    if(!navigator.gpu){
-      status.textContent = 'Tu navegador no es compatible con esto (necesitas Chrome o Edge en computadora). Usa la opción de "Pegar JSON manualmente" en su lugar.';
-      return;
-    }
-    btnGenerarIa.disabled = true;
-    status.textContent = 'Preparando modelo de IA…';
-    try{
-      const raw = await generarPreguntasIA(tema, cantidad, tipo, (txt)=>{ status.textContent = txt; });
-      status.textContent = 'Interpretando la respuesta…';
-      const r = importarPreguntasDesdeTexto(raw);
-      if(!r.ok || r.agregadas===0){
-        status.textContent = 'La IA no devolvió un formato utilizable. Intenta de nuevo, o prueba con un tema más específico.';
-      }else{
-        renderQuestionsList(); bindDraftEvents();
-        status.textContent = `Listo: ${r.agregadas} pregunta(s) agregada(s) al banco.` + (r.invalidas ? ` ${r.invalidas} se descartaron por formato.` : '');
-        toast(`${r.agregadas} pregunta(s) generada(s) y agregada(s) al banco.`);
-      }
-    }catch(e){
-      console.error(e);
-      status.textContent = 'No se pudo generar. Detalle técnico: ' + (e && e.message ? e.message : String(e));
-      console.error('Error generando preguntas con IA:', e);
-    }
-    btnGenerarIa.disabled = false;
   };
   const btnImportIa = document.getElementById('btn-import-ia');
   if(btnImportIa) btnImportIa.onclick = ()=>{
@@ -1502,6 +1507,7 @@ function bindEvents(){
     for(const q of draftQuestions){
       if(!q.text.trim()){ toast('Hay una pregunta sin enunciado.'); return; }
       if(q.type==='mc' && q.options.some(o=>!o.text.trim())){ toast('Completa todas las opciones.'); return; }
+      if(q.type==='match' && q.pairs.some(p=>!p.left.trim()||!p.right.trim())){ toast('Completa todos los pares de la relación de columnas.'); return; }
     }
     const newExam = { id:uid(), title, materia, unidad, grupo, profesor:session.name, profesorClave:session.clave, duracionMin, numAleatorio, questions:draftQuestions, createdAt:Date.now() };
     await mutateCollection('exams', STORE_KEYS.exams, 'los exámenes', arr=>{ arr.push(newExam); return arr; });
@@ -1571,6 +1577,11 @@ function bindDraftEvents(){
   document.querySelectorAll('[data-q-variante]').forEach(el=>el.oninput=()=>{ draftQuestions[parseInt(el.dataset.qVariante)].variante = el.value; });
   document.querySelectorAll('[data-q-opt]').forEach(el=>el.oninput=()=>{ const [qi,oi]=el.dataset.qOpt.split(':').map(Number); draftQuestions[qi].options[oi].text = el.value; });
   document.querySelectorAll('[data-q-correct]').forEach(el=>el.onchange=()=>{ const [qi,oi]=el.dataset.qCorrect.split(':').map(Number); draftQuestions[qi].options.forEach((o,i)=>o.correct = (i===oi)); });
+  document.querySelectorAll('[data-q-vf]').forEach(el=>el.onchange=()=>{ const [qi,val]=el.dataset.qVf.split(':'); draftQuestions[parseInt(qi)].correct = (val==='true'); });
+  document.querySelectorAll('[data-q-match-left]').forEach(el=>el.oninput=()=>{ const [qi,pi]=el.dataset.qMatchLeft.split(':').map(Number); draftQuestions[qi].pairs[pi].left = el.value; });
+  document.querySelectorAll('[data-q-match-right]').forEach(el=>el.oninput=()=>{ const [qi,pi]=el.dataset.qMatchRight.split(':').map(Number); draftQuestions[qi].pairs[pi].right = el.value; });
+  document.querySelectorAll('[data-add-pair]').forEach(el=>el.onclick=()=>{ const qi=parseInt(el.dataset.addPair); draftQuestions[qi].pairs.push({left:'',right:''}); renderQuestionsList(); bindDraftEvents(); });
+  document.querySelectorAll('[data-del-pair]').forEach(el=>el.onclick=()=>{ const [qi,pi]=el.dataset.delPair.split(':').map(Number); if(draftQuestions[qi].pairs.length>2){ draftQuestions[qi].pairs.splice(pi,1); renderQuestionsList(); bindDraftEvents(); } });
 }
 
 /* ---------------- Boot ---------------- */
