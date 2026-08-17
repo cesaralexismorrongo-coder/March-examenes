@@ -690,18 +690,33 @@ function renderExamTaking(){
         <span>Falso</span>
       </div>`;
   } else if(q.type==='match'){
-    body = `<table style="width:100%;border-collapse:separate;border-spacing:0 8px;">
-      ${q.pairs.map((p,li)=>`
-        <tr>
-          <td style="padding:10px 14px;background:#fff;border:1.5px solid var(--border);border-radius:10px 0 0 10px;font-weight:600;">${p.left}</td>
-          <td style="padding:0 0 0 8px;border:none;width:46%;">
-            <select data-match-select="${li}" style="width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:14px;font-family:inherit;background:#fff;">
-              <option value="">Selecciona…</option>
-              ${q.rightShuffled.map(r=>`<option value="${r.idx}" ${ans.answer[li]===r.idx?'selected':''}>${r.text}</option>`).join('')}
-            </select>
-          </td>
-        </tr>`).join('')}
-    </table>`;
+    const usedIdx = new Set(ans.answer.filter(x=>x!==null));
+    body = `
+      <p class="hint" style="margin:0 0 14px;">A cada elemento de la izquierda asígnale el número que le corresponde de la lista de la derecha. Cada número solo puede usarse una vez.</p>
+      <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start;">
+        <div style="flex:1;min-width:260px;">
+          ${q.pairs.map((p,li)=>{
+            const currentVal = ans.answer[li];
+            return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+              <div style="width:26px;height:26px;border-radius:50%;background:var(--green-dark);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0;">${String.fromCharCode(65+li)}</div>
+              <div style="flex:1;padding:10px 12px;background:#fff;border:1.5px solid var(--border);border-radius:8px;">${p.left}</div>
+              <select data-match-select="${li}" style="width:76px;padding:10px 6px;border:1.5px solid var(--border);border-radius:8px;font-size:14px;font-family:inherit;background:#fff;text-align:center;">
+                <option value="">—</option>
+                ${q.rightShuffled.map((r,ri)=>{
+                  if(usedIdx.has(r.idx) && currentVal!==r.idx) return '';
+                  return `<option value="${r.idx}" ${currentVal===r.idx?'selected':''}>${ri+1}</option>`;
+                }).join('')}
+              </select>
+            </div>`;
+          }).join('')}
+        </div>
+        <div style="flex:1;min-width:220px;padding:14px 16px;background:#fbfbfa;border:1px solid var(--border);border-radius:10px;">
+          <div class="hint" style="margin:0 0 10px;text-transform:uppercase;font-weight:600;">Opciones</div>
+          ${q.rightShuffled.map((r,ri)=>`<div style="display:flex;gap:8px;margin-bottom:8px;font-size:14px;">
+            <b>${ri+1}.</b><span>${r.text}</span>
+          </div>`).join('')}
+        </div>
+      </div>`;
   } else {
     body = `<textarea id="open-answer" rows="7" placeholder="Escribe tu respuesta…">${ans.answer||''}</textarea>`;
   }
