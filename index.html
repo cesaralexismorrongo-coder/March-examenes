@@ -884,7 +884,28 @@ function renderCrearExamen(){
     <div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;">
       <button class="btn btn-outline btn-sm" id="btn-add-mc">+ Opción múltiple</button>
       <button class="btn btn-outline btn-sm" id="btn-add-open">+ Pregunta abierta</button>
-      <button class="btn btn-outline btn-sm" id="btn-toggle-import">🤖 Importar preguntas generadas con IA</button>
+      <button class="btn btn-primary btn-sm" id="btn-toggle-gen-ia">✨ Generar preguntas con IA (gratis, automático)</button>
+      <button class="btn btn-outline btn-sm" id="btn-toggle-import">🤖 Pegar JSON manualmente</button>
+    </div>
+    <div id="gen-ia-wrap" style="display:none;margin-top:14px;padding:14px;border:1px dashed var(--line);border-radius:10px;">
+      <p class="hint" style="margin-bottom:8px;">
+        Escribe el tema y la IA genera las preguntas automáticamente, aquí mismo, sin salir de la página.
+        Requiere una computadora con Chrome o Edge actualizado (no funciona en todos los celulares).
+        La primera vez descarga un modelo de IA (~1-2 GB) y puede tardar varios minutos; después será más rápido.
+      </p>
+      <div class="field-row">
+        <div class="field"><label>Tema</label><input id="gen-ia-tema" type="text" placeholder="Ej. Normas ISO 9001"></div>
+        <div class="field" style="max-width:120px;"><label># Preguntas</label><input id="gen-ia-cantidad" type="number" value="5" min="1" max="15"></div>
+        <div class="field" style="max-width:180px;"><label>Tipo</label>
+          <select id="gen-ia-tipo">
+            <option value="mixto">Mixto</option>
+            <option value="mc">Solo opción múltiple</option>
+            <option value="open">Solo abiertas</option>
+          </select>
+        </div>
+      </div>
+      <button class="btn btn-primary btn-sm" id="btn-generar-ia">Generar preguntas</button>
+      <p id="gen-ia-status" class="hint" style="margin-top:8px;"></p>
     </div>
     <div id="import-ia-wrap" style="display:none;margin-top:14px;padding:14px;border:1px dashed var(--line);border-radius:10px;">
       <p class="hint" style="margin-bottom:8px;">
@@ -928,6 +949,64 @@ function renderQuestionsList(){
 function escapeAttr(s){ return (s||'').replace(/"/g,'&quot;'); }
 // Normaliza el nombre de un grupo para evitar duplicados por mayúsculas/espacios (EVN3, evn3, EVN 3 → EVN3)
 function normalizeGrupo(s){ return (s||'').trim().toUpperCase().replace(/\s+/g,''); }
+
+// Valida y agrega al banco de preguntas un texto que debería contener un JSON
+// con el formato [{type,text,points,options?,variante?}, ...]. Se usa tanto para
+// el pegado manual como para lo que genere la IA en el navegador.
+function importarPreguntasDesdeTexto(raw){
+  raw = (raw||'').trim();
+  if(!raw) return { ok:false, error:'vacio' };
+  // Si el texto trae cosas antes/después del arreglo JSON (típico en respuestas de IA), lo recortamos.
+  const inicio = raw.indexOf('[');
+  const fin = raw.lastIndexOf(']');
+  if(inicio!==-1 && fin!==-1 && fin>inicio) raw = raw.slice(inicio, fin+1);
+  let parsed;
+  try{ parsed = JSON.parse(raw); }
+  catch(e){ return { ok:false, error:'json' }; }
+  if(!Array.isArray(parsed)) return { ok:false, error:'noArray' };
+  let agregadas = 0, invalidas = 0;
+  parsed.forEach(q=>{
+    if(!q || typeof q.text!=='string' || !q.text.trim() || (q.type!=='mc' && q.type!=='open')){ invalidas++; return; }
+    if(q.type==='mc'){
+      if(!Array.isArray(q.options) || q.options.length<2 || !q.options.some(o=>o.correct) || q.options.some(o=>typeof o.text!=='string' || !o.text.trim())){ invalidas++; return; }
+      draftQuestions.push({id:uid(), type:'mc', text:q.text.trim(), points:Number(q.points)||2, variante:(q.variante||'').trim(), options:q.options.map(o=>({text:o.text.trim(), correct:!!o.correct}))});
+    }else{
+      draftQuestions.push({id:uid(), type:'open', text:q.text.trim(), points:Number(q.points)||5, variante:(q.variante||'').trim()});
+    }
+    agregadas++;
+  });
+  return { ok:true, agregadas, invalidas };
+}
+
+// ------------------------------------------------------------------
+// Generación de preguntas con IA gratuita, corriendo en el navegador
+// (WebLLM). No requiere API key ni servidor, pero la primera vez que
+// se usa descarga un modelo (~1-2 GB) y puede tardar varios minutos.
+// Requiere un navegador de escritorio compatible con WebGPU (Chrome/Edge recientes).
+// ------------------------------------------------------------------
+let webllmEngine = null;
+async function getWebLLMEngine(onProgress){
+  if(webllmEngine) return webllmEngine;
+  if(!navigator.gpu) throw new Error('sin_webgpu');
+  const webllm = await import('https://esm.run/@mlc-ai/web-llm');
+  webllmEngine = await webllm.CreateMLCEngine('Llama-3.2-3B-Instruct-q4f16_1-MLC', {
+    initProgressCallback: (report)=>{ if(onProgress) onProgress(report.text); }
+  });
+  return webllmEngine;
+}
+async function generarPreguntasIA(tema, cantidad, tipo, onProgress){
+  const engine = await getWebLLMEngine(onProgress);
+  const tipoInstruccion = tipo==='mc'
+    ? 'todas de opción múltiple (campo type:"mc") con exactamente 4 opciones cada una, solo una marcada como correcta'
+    : tipo==='open'
+    ? 'todas de tipo abierta (campo type:"open")'
+    : 'una mezcla de opción múltiple (type:"mc", 4 opciones, solo una correcta) y abiertas (type:"open")';
+  const prompt = `Genera ${cantidad} preguntas de examen en español, a nivel universitario, sobre el tema: "${tema}". ${tipoInstruccion}.
+Responde ÚNICAMENTE con un arreglo JSON válido, sin explicaciones ni texto adicional antes o después, con este formato exacto:
+[{"type":"mc","text":"...","points":2,"options":[{"text":"...","correct":true},{"text":"...","correct":false},{"text":"...","correct":false},{"text":"...","correct":false}]},{"type":"open","text":"...","points":5}]`;
+  const reply = await engine.chat.completions.create({ messages:[{role:'user', content:prompt}], temperature:0.7 });
+  return reply.choices[0].message.content;
+}
 
 // Calcula el promedio de calificación (0-10) agrupado por unidad, a partir de una lista de intentos calificados
 function promedioPorUnidad(attempts){
@@ -1351,33 +1430,57 @@ function bindEvents(){
   if(btnAddMc) btnAddMc.onclick = ()=>{ draftQuestions.push({id:uid(), type:'mc', text:'', points:2, options:[{text:'',correct:true},{text:'',correct:false},{text:'',correct:false},{text:'',correct:false}]}); renderQuestionsList(); bindDraftEvents(); };
   const btnAddOpen = document.getElementById('btn-add-open');
   if(btnAddOpen) btnAddOpen.onclick = ()=>{ draftQuestions.push({id:uid(), type:'open', text:'', points:5}); renderQuestionsList(); bindDraftEvents(); };
+  const btnToggleGenIa = document.getElementById('btn-toggle-gen-ia');
+  if(btnToggleGenIa) btnToggleGenIa.onclick = ()=>{
+    const wrap = document.getElementById('gen-ia-wrap');
+    wrap.style.display = wrap.style.display==='none' ? 'block' : 'none';
+  };
   const btnToggleImport = document.getElementById('btn-toggle-import');
   if(btnToggleImport) btnToggleImport.onclick = ()=>{
     const wrap = document.getElementById('import-ia-wrap');
     wrap.style.display = wrap.style.display==='none' ? 'block' : 'none';
   };
+  const btnGenerarIa = document.getElementById('btn-generar-ia');
+  if(btnGenerarIa) btnGenerarIa.onclick = async ()=>{
+    const tema = document.getElementById('gen-ia-tema').value.trim();
+    const cantidad = Math.max(1, Math.min(15, parseInt(document.getElementById('gen-ia-cantidad').value)||5));
+    const tipo = document.getElementById('gen-ia-tipo').value;
+    const status = document.getElementById('gen-ia-status');
+    if(!tema){ toast('Escribe primero el tema de las preguntas.'); return; }
+    if(!navigator.gpu){
+      status.textContent = 'Tu navegador no es compatible con esto (necesitas Chrome o Edge en computadora). Usa la opción de "Pegar JSON manualmente" en su lugar.';
+      return;
+    }
+    btnGenerarIa.disabled = true;
+    status.textContent = 'Preparando modelo de IA…';
+    try{
+      const raw = await generarPreguntasIA(tema, cantidad, tipo, (txt)=>{ status.textContent = txt; });
+      status.textContent = 'Interpretando la respuesta…';
+      const r = importarPreguntasDesdeTexto(raw);
+      if(!r.ok || r.agregadas===0){
+        status.textContent = 'La IA no devolvió un formato utilizable. Intenta de nuevo, o prueba con un tema más específico.';
+      }else{
+        renderQuestionsList(); bindDraftEvents();
+        status.textContent = `Listo: ${r.agregadas} pregunta(s) agregada(s) al banco.` + (r.invalidas ? ` ${r.invalidas} se descartaron por formato.` : '');
+        toast(`${r.agregadas} pregunta(s) generada(s) y agregada(s) al banco.`);
+      }
+    }catch(e){
+      console.error(e);
+      status.textContent = 'No se pudo generar. Revisa tu conexión a internet (la primera vez necesita descargar el modelo) o intenta de nuevo.';
+    }
+    btnGenerarIa.disabled = false;
+  };
   const btnImportIa = document.getElementById('btn-import-ia');
   if(btnImportIa) btnImportIa.onclick = ()=>{
-    const raw = document.getElementById('import-ia-text').value.trim();
-    if(!raw){ toast('Pega primero el JSON con las preguntas.'); return; }
-    let parsed;
-    try{ parsed = JSON.parse(raw); }
-    catch(e){ toast('Ese texto no es JSON válido. Revisa que esté completo y bien copiado.'); return; }
-    if(!Array.isArray(parsed)){ toast('El JSON debe ser una lista de preguntas entre corchetes [ ].'); return; }
-    let agregadas = 0, invalidas = 0;
-    parsed.forEach(q=>{
-      if(!q || typeof q.text!=='string' || !q.text.trim() || (q.type!=='mc' && q.type!=='open')){ invalidas++; return; }
-      if(q.type==='mc'){
-        if(!Array.isArray(q.options) || q.options.length<2 || !q.options.some(o=>o.correct) || q.options.some(o=>typeof o.text!=='string' || !o.text.trim())){ invalidas++; return; }
-        draftQuestions.push({id:uid(), type:'mc', text:q.text.trim(), points:Number(q.points)||2, variante:(q.variante||'').trim(), options:q.options.map(o=>({text:o.text.trim(), correct:!!o.correct}))});
-      }else{
-        draftQuestions.push({id:uid(), type:'open', text:q.text.trim(), points:Number(q.points)||5, variante:(q.variante||'').trim()});
-      }
-      agregadas++;
-    });
+    const raw = document.getElementById('import-ia-text').value;
+    const r = importarPreguntasDesdeTexto(raw);
+    if(!r.ok){
+      const msgs = { vacio:'Pega primero el JSON con las preguntas.', json:'Ese texto no es JSON válido. Revisa que esté completo y bien copiado.', noArray:'El JSON debe ser una lista de preguntas entre corchetes [ ].' };
+      toast(msgs[r.error] || 'No se pudo leer el JSON.'); return;
+    }
     renderQuestionsList(); bindDraftEvents();
     document.getElementById('import-ia-text').value = '';
-    if(agregadas) toast(`${agregadas} pregunta(s) agregada(s) al banco.` + (invalidas ? ` ${invalidas} se saltaron por formato inválido.` : ''));
+    if(r.agregadas) toast(`${r.agregadas} pregunta(s) agregada(s) al banco.` + (r.invalidas ? ` ${r.invalidas} se saltaron por formato inválido.` : ''));
     else toast('No se pudo agregar ninguna pregunta. Revisa el formato del JSON.');
   };
   bindDraftEvents();
